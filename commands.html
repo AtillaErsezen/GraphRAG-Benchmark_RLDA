@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GraphRAG Benchmark Commands</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --card-border: rgba(255, 255, 255, 0.1);
+            --accent-color: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.2);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --success-color: #10b981;
+            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 2rem;
+            min-height: 100vh;
+            background-image:
+                radial-gradient(circle at 0% 0%, rgba(56, 189, 248, 0.05) 0, transparent 50%),
+                radial-gradient(circle at 100% 100%, rgba(56, 189, 248, 0.05) 0, transparent 50%);
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        header {
+            margin-bottom: 3rem;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(to right, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+        }
+
+        .command-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+        }
+
+        .command-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            cursor: pointer;
+            transition: var(--transition);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .command-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(to right, transparent, var(--accent-color), transparent);
+            transform: translateX(-100%);
+            transition: var(--transition);
+        }
+
+        .command-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(56, 189, 248, 0.4);
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+        }
+
+        .command-card:hover::before {
+            transform: translateX(100%);
+        }
+
+        .command-card:active {
+            transform: translateY(-2px) scale(0.99);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .command-title {
+            font-weight: 600;
+            font-size: 1.1rem;
+            color: var(--accent-color);
+        }
+
+        .copy-badge {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            background: rgba(255, 255, 255, 0.05);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+
+        .command-content {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 1rem;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            color: #e2e8f0;
+            border: 1px solid rgba(0, 0, 0, 0.2);
+        }
+
+        .copied .command-card {
+            border-color: var(--success-color);
+        }
+
+        .copied .copy-badge {
+            color: var(--success-color);
+            background: rgba(16, 185, 129, 0.1);
+        }
+
+        #toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            background: var(--success-color);
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-weight: 600;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            transform: translateY(100px);
+            opacity: 0;
+            transition: var(--transition);
+            z-index: 100;
+        }
+
+        #toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        .notes {
+            margin-top: 3rem;
+            padding: 1.5rem;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            border-left: 4px solid var(--accent-color);
+        }
+
+        .notes h2 {
+            font-size: 1.2rem;
+            margin-bottom: 1rem;
+            color: var(--text-secondary);
+        }
+
+        .note-item {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+        }
+
+        .note-item::before {
+            content: '•';
+            color: var(--accent-color);
+            margin-right: 0.5rem;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>GraphRAG Prediction Commands</h1>
+            <p class="subtitle">Click any box to copy the command to your clipboard</p>
+        </header>
+
+        <div class="command-grid">
+            <!-- LightRag Prediction -->
+            <div class="command-card" onclick="copyToClipboard(this)">
+                <div class="card-header">
+                    <span class="command-title">LightRag Prediction</span>
+                    <span class="copy-badge">Click to Copy</span>
+                </div>
+                <div class="command-content">conda activate light `
+                    $env:LLM_API_KEY="" `
+                    python Examples/run_lightrag.py `
+                    --subset medical `
+                    --mode API `
+                    --base_dir ./Examples/lightrag_workspace `
+                    --model_name gpt-4o-mini `
+                    --embed_model BAAI/bge-large-en-v1.5 `
+                    --retrieve_topk 30 `
+                    --llm_base_url https://api.openai.com/v1 `
+                    --llm_max_async 1</div>
+            </div>
+
+            <!-- Lightrag prediction with lda -->
+            <div class="command-card" onclick="copyToClipboard(this)">
+                <div class="card-header">
+                    <span class="command-title">LightRag Prediction with LDA</span>
+                    <span class="copy-badge">Click to Copy</span>
+                </div>
+                <div class="command-content">conda activate light `
+                    $env:LLM_API_KEY="" `
+                    python Examples/run_lightrag.py `
+                    --subset medical `
+                    --mode API `
+                    --base_dir ./Examples/lightrag_workspace_lda `
+                    --model_name gpt-4o-mini `
+                    --embed_model BAAI/bge-large-en-v1.5 `
+                    --retrieve_topk 30 `
+                    --llm_base_url https://api.openai.com/v1 `
+                    --llm_max_async 1 `
+                    --use_lda</div>
+            </div>
+
+            <!-- Generation Evaluation -->
+            <div class="command-card" onclick="copyToClipboard(this)">
+                <div class="card-header">
+                    <span class="command-title">Generation Evaluation</span>
+                    <span class="copy-badge">Click to Copy</span>
+                </div>
+                <div class="command-content">conda activate light `
+                    $env:LLM_API_KEY="" `
+                    python -m Evaluation.generation_eval `
+                    --mode API `
+                    --model gpt-4o-mini `
+                    --base_url https://api.openai.com/v1 `
+                    --embedding_model BAAI/bge-large-en-v1.5 `
+                    --data_file ./results/lightrag/Medical/predictions_Medical.json `
+                    --output_file ./results/evaluation_results_generation.json `
+                    --detailed_output</div>
+            </div>
+
+
+            <!-- Retrieval Eval -->
+            <div class="command-card" onclick="copyToClipboard(this)">
+                <div class="card-header">
+                    <span class="command-title">Retrieval Evaluation</span>
+                    <span class="copy-badge">Click to Copy</span>
+                </div>
+                <div class="command-content">conda activate light `
+                    $env:LLM_API_KEY="" `
+                    python -m Evaluation.retrieval_eval `
+                    --mode API `
+                    --model gpt-4o-mini `
+                    --base_url https://api.openai.com/v1 `
+                    --embedding_model BAAI/bge-large-en-v1.5 `
+                    --data_file ./results/lightrag/Medical/predictions_Medical.json `
+                    --output_file ./results/evaluation_results_retrieval.json `
+                    --detailed_output</div>
+            </div>
+
+            <!-- Indexing_eval -->
+            <div class="command-card" onclick="copyToClipboard(this)">
+                <div class="card-header">
+                    <span class="command-title">Indexing Evaluation</span>
+                    <span class="copy-badge">Click to Copy</span>
+                </div>
+                <div class="command-content">conda activate light `
+                    $env:LLM_API_KEY="" `
+                    python -m Evaluation.indexing_eval `
+                    --framework lightrag `
+                    --base_path ./Examples/lightrag_workspace/Medical `
+                    --output ./results/indexing_results.json</div>
+            </div>
+        </div>
+
+</body>
+
+</html>
