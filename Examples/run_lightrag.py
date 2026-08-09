@@ -1,12 +1,37 @@
 # lightrag_example.py
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
+import requests
+_orig_request = requests.Session.request
+def _no_verify_request(self, method, url, **kwargs):
+    kwargs['verify'] = False
+    return _orig_request(self, method, url, **kwargs)
+requests.Session.request = _no_verify_request
+
+import httpx
+_orig_async_init = httpx.AsyncClient.__init__
+def _patched_async_init(self, *args, **kwargs):
+    kwargs.setdefault('verify', False)
+    _orig_async_init(self, *args, **kwargs)
+httpx.AsyncClient.__init__ = _patched_async_init
+
+_orig_sync_init = httpx.Client.__init__
+def _patched_sync_init(self, *args, **kwargs):
+    kwargs.setdefault('verify', False)
+    _orig_sync_init(self, *args, **kwargs)
+httpx.Client.__init__ = _patched_sync_init
+
 import asyncio
 import os
+import time
 import logging
 import nest_asyncio
 import argparse
 import json
 from typing import Dict, List
 from datasets import load_dataset
+from lda_graph_builder import build_lda_graph
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache
@@ -62,9 +87,9 @@ async def llm_model_func(
 ) -> str:
     """LLM interface function using OpenAI-compatible API"""
     # Get API configuration from kwargs
-    model_name = kwargs.get("model_name", "qwen2.5-14b-instruct")
-    base_url = kwargs.get("base_url", "")
-    api_key = kwargs.get("api_key", "")
+    model_name = kwargs.pop("model_name", "qwen2.5-14b-instruct")
+    base_url = kwargs.pop("base_url", "")
+    api_key = kwargs.pop("api_key", "")
     
     return await openai_complete_if_cache(
         model_name,
@@ -83,7 +108,8 @@ async def initialize_rag(
     model_name: str,
     embed_model_name: str,
     llm_base_url: str,
-    llm_api_key: str
+    llm_api_key: str,
+    llm_max_async: int = 2
 ) -> LightRAG:
     """Initialize LightRAG instance for a specific corpus"""
     working_dir = os.path.join(base_dir, source)
@@ -123,16 +149,16 @@ async def initialize_rag(
             "options": {"num_ctx": 32768},
         }
 
-        llm_model_func = ollama_model_complete
+        llm_model_func_input = ollama_model_complete
     else:
         raise ValueError(f"Unsupported mode: {mode}. Use 'API' or 'ollama'.")
     
     # Create RAG instance
     rag = LightRAG(
         working_dir=working_dir,
-        llm_model_func=llm_model_func,
+        llm_model_func=llm_model_func_input,
         llm_model_name=model_name,
-        llm_model_max_async=4,
+        llm_model_max_async=llm_max_async,
         llm_model_max_token_size=32768,
         chunk_token_size=1200,
         chunk_overlap_token_size=100,
@@ -155,7 +181,9 @@ async def process_corpus(
     llm_api_key: str,
     questions: List[dict],
     sample: int,
-    retrieve_topk: int
+    retrieve_topk: int,
+    llm_max_async: int = 2,
+    use_lda: bool = False,
 ):
     """Process a single corpus: index it and answer its questions"""
     logging.info(f"📚 Processing corpus: {corpus_name}")
@@ -168,12 +196,52 @@ async def process_corpus(
         model_name=model_name,
         embed_model_name=embed_model_name,
         llm_base_url=llm_base_url,
-        llm_api_key=llm_api_key
+        llm_api_key=llm_api_key,
+        llm_max_async=llm_max_async
     )
     
-    # Index the corpus content
-    rag.insert(context)
+    # Index the corpus content. Total (build + insertion) is timed for both paths
+    # so LDA and default LightRAG are an apples-to-apples comparison. For LDA the
+    # build and insertion are separate calls, so they are also reported individually;
+    # default LightRAG fuses both inside ainsert(), so only the combined total exists.
+    t_start = time.perf_counter()
+    if use_lda:
+        cache_path = os.path.join(base_dir, corpus_name, "lda_graph_cache.json")
+        lda_kg = build_lda_graph(context, cache_path)
+        t_built = time.perf_counter()
+        await rag.ainsert_custom_kg(lda_kg)
+        t_end = time.perf_counter()
+        build_t, insert_t, total_t = t_built - t_start, t_end - t_built, t_end - t_start
+        logging.info(
+            f"⏱️ Indexing time ({corpus_name}) — build: {build_t:.2f}s | "
+            f"insert: {insert_t:.2f}s | total: {total_t:.2f}s ({total_t / 60:.2f} min)"
+        )
+        timing = {"build_seconds": round(build_t, 3), "insert_seconds": round(insert_t, 3)}
+    else:
+        await rag.ainsert(context)
+        total_t = time.perf_counter() - t_start
+        logging.info(
+            f"⏱️ Indexing time ({corpus_name}) — build+insert (fused in ainsert): "
+            f"{total_t:.2f}s ({total_t / 60:.2f} min)"
+        )
+        timing = {"build_seconds": None, "insert_seconds": None}
     logging.info(f"✅ Indexed corpus: {corpus_name} ({len(context.split())} words)")
+
+    # Persist indexing timing to JSON for the apples-to-apples comparison
+    results_tag = "lightrag_lda" if use_lda else "lightrag"
+    timing.update({
+        "corpus": corpus_name,
+        "method": results_tag,
+        "total_seconds": round(total_t, 3),
+        "total_minutes": round(total_t / 60, 3),
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    timing_dir = os.path.join("./results", results_tag, corpus_name)
+    os.makedirs(timing_dir, exist_ok=True)
+    timing_path = os.path.join(timing_dir, "indexing_time.json")
+    with open(timing_path, "w", encoding="utf-8") as f:
+        json.dump(timing, f, indent=2, ensure_ascii=False)
+    logging.info(f"💾 Saved indexing time → {timing_path}")
     
     corpus_questions = questions.get(corpus_name, [])
     
@@ -188,53 +256,74 @@ async def process_corpus(
     logging.info(f"🔍 Found {len(corpus_questions)} questions for {corpus_name}")
     
     # Prepare output path
-    output_dir = f"./results/lightrag/{corpus_name}"
+    results_tag = "lightrag_lda" if use_lda else "lightrag"
+    output_dir = f"./results/{results_tag}/{corpus_name}"
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"predictions_{corpus_name}.json")
     
     # Process questions
     results = []
     query_type = 'hybrid'
-    
-    for q in tqdm(corpus_questions, desc=f"Answering questions for {corpus_name}"):
-        # Prepare query parameters
-        query_param = QueryParam(
-            mode=query_type,
-            top_k=retrieve_topk,
-            max_token_for_text_unit=4000,
-            max_token_for_global_context=4000,
-            max_token_for_local_context=4000
-        )
-        
-        # Execute query
-        response, context = rag.query(
-            q["question"],
-            param=query_param,
-            system_prompt=SYSTEM_PROMPT
-        )
-        
-        # Handle both async and sync responses
-        if asyncio.iscoroutine(response):
-            response = await response
-        predicted_answer = str(response)
+    max_retries = 7
+    save_every = 50
+
+    for q_idx, q in enumerate(tqdm(corpus_questions, desc=f"Answering questions for {corpus_name}")):
+        predicted_answer, context = "", None
+
+        for attempt in range(1, max_retries + 1):
+            # Fresh params each attempt — kg_query mutates query_param.mode on keyword fallback
+            query_param = QueryParam(
+                mode=query_type,
+                top_k=retrieve_topk,
+                max_token_for_text_unit=4000,
+                max_token_for_global_context=4000,
+                max_token_for_local_context=4000
+            )
+            try:
+                # Execute query
+                response = rag.query(
+                    q["question"],
+                    param=query_param,
+                    system_prompt=SYSTEM_PROMPT
+                )
+
+                # Handle both async and sync responses
+                if asyncio.iscoroutine(response):
+                    response = await response
+                predicted_answer, context = response
+                predicted_answer = str(predicted_answer)
+                break  # success
+            except Exception as e:
+                logging.warning(f"⚠️ Question {q['id']} failed (attempt {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    await asyncio.sleep(2 * attempt)  # backoff before retry
+                else:
+                    logging.error(f"❌ Question {q['id']} failed after {max_retries} attempts; recording empty result")
+                    predicted_answer, context = "", None
 
         # Collect results
         results.append({
             "id": q["id"],
             "question": q["question"],
             "source": corpus_name,
-            "context": context,
+            "context": [context] if context else [],
             "evidence": q["evidence"],
             "question_type": q["question_type"],
             "generated_answer": predicted_answer,
             "ground_truth": q.get("answer"),
 
         })
-    
+
+        # Incremental checkpoint so a later crash never wipes all progress
+        if (q_idx + 1) % save_every == 0:
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2, ensure_ascii=False)
+            logging.info(f"💾 Checkpoint: {len(results)}/{len(corpus_questions)} saved to: {output_path}")
+
     # Save results
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
-    
+
     logging.info(f"💾 Saved {len(results)} predictions to: {output_path}")
 
 def main():
@@ -262,7 +351,10 @@ def main():
     parser.add_argument("--model_name", default="qwen2.5-14b-instruct", help="LLM model identifier")
     parser.add_argument("--embed_model", default="bge-base-en", help="Embedding model name")
     parser.add_argument("--retrieve_topk", type=int, default=5, help="Number of top documents to retrieve")
+    parser.add_argument("--llm_max_async", type=int, default=2, help="Max concurrent LLM requests per corpus (lower to avoid rate limits)")
+    parser.add_argument("--max_concurrent_corpus", type=int, default=2, help="Max number of corpora processed simultaneously")
     parser.add_argument("--sample", type=int, default=None, help="Number of questions to sample per corpus")
+    parser.add_argument("--use_lda", action="store_true", help="Use LDA-based KG instead of LLM entity extraction")
     
     # API configuration
     parser.add_argument("--llm_base_url", default="https://api.openai.com/v1", 
@@ -331,10 +423,11 @@ def main():
     
     # Process each corpus concurrently in a single event loop
     async def _run_all():
-        tasks = []
-        for item in corpus_data:
-            tasks.append(
-                process_corpus(
+        semaphore = asyncio.Semaphore(args.max_concurrent_corpus)
+
+        async def _run_one(item):
+            async with semaphore:
+                return await process_corpus(
                     corpus_name=item["corpus_name"],
                     context=item["context"],
                     base_dir=args.base_dir,
@@ -345,10 +438,12 @@ def main():
                     llm_api_key=api_key,
                     questions=grouped_questions,
                     sample=args.sample,
-                    retrieve_topk=args.retrieve_topk
+                    retrieve_topk=args.retrieve_topk,
+                    llm_max_async=args.llm_max_async,
+                    use_lda=args.use_lda
                 )
-            )
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        results = await asyncio.gather(*[_run_one(item) for item in corpus_data], return_exceptions=True)
         for r in results:
             if isinstance(r, Exception):
                 logging.exception(f"Task failed: {r}")
